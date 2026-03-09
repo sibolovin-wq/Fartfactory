@@ -9,7 +9,7 @@
   body { background:#111; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:'Courier New',monospace; overflow:hidden; }
   canvas { display:block; cursor:crosshair; image-rendering:pixelated; image-rendering:crisp-edges; touch-action:none;
     /* Scale up to fill viewport while keeping aspect ratio */
-    width: min(100vw, calc(100vh * (640 / 545)));
+    width: min(100vw, calc(100vh * (640 / 590)));
     height: auto;
   }
 </style>
@@ -20,7 +20,7 @@
 // ============================================================
 //  FART FACTORY — v2
 // ============================================================
-const TILE=32, COLS=20, ROWS=15, W=COLS*TILE, H=ROWS*TILE, HUD_H=65, CANVAS_H=H+HUD_H;
+const TILE=32, COLS=20, ROWS=15, W=COLS*TILE, H=ROWS*TILE, HUD_H=110, CANVAS_H=H+HUD_H;
 const canvas=document.getElementById('gameCanvas');
 canvas.width=W; canvas.height=CANVAS_H;
 const ctx=canvas.getContext('2d');
@@ -952,27 +952,39 @@ function drawHUD(){
   ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';
   ctx.fillText(`💨 PRESSURE ${Math.floor(pressure)}/100`,bx+bw/2,17);
 
-  // Toolbar: 6 tools + Repair + SHOP button
-  // 6 × 80px = 480 + repair 76px + shop 68px = 624 from x=8
-  const ty=43;
+  // Icon toolbar — 8 slots × 80px, y=46 h=60 (≥48px touch target)
+  const TOOL_ICONS=['🌀','🧪','⚙','🛢','🚚','🔧','🔨','🛒'];
+  const TOOL_NAMES=['Fan','Filter','Comp','Tank','Dock','Pipe','Repair','Shop'];
+  const TOOL_COSTS=[20,30,50,40,60,5,5,0];
+  const TY=46,TH=62,TW=80;
+
+  function drawToolBtn(tx,icon,name,cost,accentColor,sel,dimmed){
+    ctx.globalAlpha=dimmed?0.45:1;
+    // Background: bright fill if selected, dark with colored border if not
+    drawRR(tx+2,TY,TW-4,TH,7,sel?accentColor:'#18182a',sel?'#fff':accentColor);
+    // Emoji
+    ctx.font='22px serif';ctx.textAlign='center';
+    ctx.fillText(icon,tx+TW/2,TY+25);
+    // Name — white when unselected, black when selected (bright bg)
+    ctx.fillStyle=sel?'#000':'#fff';
+    ctx.font='bold 10px Courier New';ctx.textAlign='center';
+    ctx.fillText(name,tx+TW/2,TY+40);
+    // Cost — yellow when unselected, dark when selected
+    if(cost){
+      ctx.fillStyle=sel?'#333':'#ffd700';
+      ctx.font='9px Courier New';
+      ctx.fillText(`$${cost}`,tx+TW/2,TY+53);
+    }
+    ctx.globalAlpha=1;
+  }
+
   MDEFS.forEach((def,i)=>{
     const allowed=levelAllowedTools==='all'||levelAllowedTools.includes(def.type);
-    const tx=8+i*80,sel=selTool===def.type&&allowed;
-    ctx.globalAlpha=allowed?1:0.3;
-    drawRR(tx,ty,74,17,3,sel?def.color:'#2a2a3a',sel?'#fff':'#444');
-    ctx.fillStyle=sel?'#111':def.color;ctx.font=`${sel?'bold ':''}8px Courier New`;ctx.textAlign='left';
-    ctx.fillText(`[${def.key}]${def.label}${def.cost>0?' $'+def.cost:''}`,tx+3,ty+12);
-    ctx.globalAlpha=1;
+    const sel=selTool===def.type&&allowed;
+    drawToolBtn(i*TW,TOOL_ICONS[i],TOOL_NAMES[i],TOOL_COSTS[i],def.color,sel,!allowed);
   });
-  // Repair tool button [R]
-  const repairSel=selTool==='repair';
-  drawRR(488,ty,74,17,3,repairSel?'#ff8800':'#2a2a3a',repairSel?'#fff':'#666');
-  ctx.fillStyle=repairSel?'#111':'#ff8800';ctx.font=`${repairSel?'bold ':''}8px Courier New`;ctx.textAlign='left';
-  ctx.fillText('[R] Repair $5/clk',491,ty+12);
-  // Shop
-  drawRR(566,ty,68,17,3,showShop?'#ffaa00':'#2a2a3a',showShop?'#fff':'#666');
-  ctx.fillStyle=showShop?'#111':'#ffaa00';ctx.font='bold 9px Courier New';ctx.textAlign='center';
-  ctx.fillText('[B] SHOP',566+34,ty+12);
+  drawToolBtn(6*TW,'🔨','Repair','5/clk','#ff8800',selTool==='repair',false);
+  drawToolBtn(7*TW,'🛒','Shop','',showShop?'#ffaa00':'#886600',showShop,false);
 
 }
 
@@ -1207,9 +1219,13 @@ canvas.addEventListener('click',e=>{
       return;
     }
     if(cy<HUD_H){
-      MDEFS.forEach((def,i)=>{if(inBtn(cx,cy,8+i*80,43,74,17))selTool=def.type;});
-      if(inBtn(cx,cy,488,43,74,17))selTool=selTool==='repair'?T.FAN:'repair';
-      if(inBtn(cx,cy,566,43,68,17))showShop=!showShop;
+      const TY=46,TH=60,TW=80;
+      MDEFS.forEach((def,i)=>{
+        const allowed=levelAllowedTools==='all'||levelAllowedTools.includes(def.type);
+        if(allowed&&inBtn(cx,cy,i*TW,TY,TW,TH))selTool=def.type;
+      });
+      if(inBtn(cx,cy,6*TW,TY,TW,TH))selTool=selTool==='repair'?T.FAN:'repair';
+      if(inBtn(cx,cy,7*TW,TY,TW,TH))showShop=!showShop;
       return;
     }
     if(col>=0&&col<COLS&&row>=0&&row<ROWS){
