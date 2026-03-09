@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Fart Factory 💨</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#111; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:'Courier New',monospace; overflow:hidden; }
+  canvas { display:block; cursor:crosshair; image-rendering:pixelated; image-rendering:crisp-edges; touch-action:none;
+    /* Scale up to fill viewport while keeping aspect ratio */
+    width: min(100vw, calc(100vh * (640 / 545)));
+    height: auto;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ============================================================
+//  FART FACTORY — v2
+// ============================================================
+const TILE=32, COLS=20, ROWS=15, W=COLS*TILE, H=ROWS*TILE, HUD_H=65, CANVAS_H=H+HUD_H;
+const canvas=document.getElementById('gameCanvas');
+canvas.width=W; canvas.height=CANVAS_H;
+const ctx=canvas.getContext('2d');
+
+// ============================================================
+//  ASSETS
+// ============================================================
+const IMAGES={}, FART_SOUNDS=[];
+let assetsLoaded=0, assetsTotal=0;
+function loadImg(key,src){assetsTotal++;const i=new Image();i.onload=()=>{IMAGES[key]=i;assetsLoaded++;};i.onerror=()=>assetsLoaded++;i.src=src;}
+function loadImgWhiteKey(key,src){
+  assetsTotal++;
+  const i=new Image();
+  i.onload=()=>{
+    try{
+      const oc=document.createElement('canvas');oc.width=i.naturalWidth;oc.height=i.naturalHeight;
+      const c=oc.getContext('2d');c.drawImage(i,0,0);
+      const id=c.getImageData(0,0,oc.width,oc.height),d=id.data;
+      // Sample corner pixel as the background key colour
+      const kr=d[0],kg=d[1],kb=d[2],tol=24;
+      for(let p=0;p<d.length;p+=4){
+        if(Math.abs(d[p]-kr)<tol&&Math.abs(d[p+1]-kg)<tol&&Math.abs(d[p+2]-kb)<tol)d[p+3]=0;
+      }
+      c.putImageData(id,0,0);IMAGES[key]=oc;
+    }catch(e){IMAGES[key]=i;}
+    assetsLoaded++;
+  };
+  i.onerror=()=>assetsLoaded++;i.src=src;
+}
+function loadSnd(src){assetsTotal++;const a=new Audio(src);a.addEventListener('canplaythrough',()=>assetsLoaded++,{once:true});a.addEventListener('error',()=>assetsLoaded++,{once:true});FART_SOUNDS.push(a);}
+loadImg('bg','assets/images/background.png');
+loadImgWhiteKey('char1a','assets/images/1a.png');
+loadImgWhiteKey('char1b','assets/images/1b.png');
+loadImgWhiteKey('char2a','assets/images/2a.png');
+loadImgWhiteKey('char2b','assets/images/2b.png');
+loadImgWhiteKey('char3a','assets/images/3a.png');
+loadImgWhiteKey('char3b','assets/images/3b.png');
+loadImg('mach1','assets/images/machine1.png');
+loadImg('mach2','assets/images/machine2.png');
+loadImg('mach3','assets/images/machine3.png');
+loadImg('mach4','assets/images/machine4.png');
+for(let i=1;i<=10;i++) loadSnd(`assets/sounds/Fart_${i}.wav`);
+
+// ============================================================
+//  AUDIO
+// ============================================================
+let audioCtx=null;
+function getAC(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();return audioCtx;}
+function playFartSnd(){try{getAC();}catch(e){}if(!FART_SOUNDS.length)return;const s=FART_SOUNDS[Math.floor(Math.random()*FART_SOUNDS.length)].cloneNode();s.volume=0.55;s.play().catch(()=>{});}
+function playExplosion(){try{const ac=getAC(),buf=ac.createBuffer(1,ac.sampleRate,ac.sampleRate),d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(ac.sampleRate*0.3));const src=ac.createBufferSource();src.buffer=buf;const g=ac.createGain();src.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(0.9,ac.currentTime);src.start();}catch(e){}}
+function playWarning(){try{const ac=getAC(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.frequency.setValueAtTime(880,ac.currentTime);o.frequency.setValueAtTime(660,ac.currentTime+0.1);o.frequency.setValueAtTime(880,ac.currentTime+0.2);g.gain.setValueAtTime(0.25,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.35);o.type='square';o.start();o.stop(ac.currentTime+0.35);}catch(e){}}
+function playShip(){try{const ac=getAC(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.frequency.setValueAtTime(440,ac.currentTime);o.frequency.exponentialRampToValueAtTime(880,ac.currentTime+0.18);g.gain.setValueAtTime(0.2,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.18);o.type='sine';o.start();o.stop(ac.currentTime+0.18);}catch(e){}}
+function playCoin(){try{const ac=getAC(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.frequency.setValueAtTime(660,ac.currentTime);o.frequency.setValueAtTime(880,ac.currentTime+0.05);g.gain.setValueAtTime(0.15,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.15);o.type='sine';o.start();o.stop(ac.currentTime+0.15);}catch(e){}}
+
+// ============================================================
+//  CONSTANTS
+// ============================================================
+const T={EMPTY:0,FAN:1,FILTER:2,COMPRESSOR:3,TANK:4,DOCK:5,PIPE:6};
+const GAS={
+  normal:    {density:1.0,pts:10},
+  explosive: {density:2.5,pts:25},
+  dense:     {density:1.5,pts:15},
+  silent:    {density:0.8,pts:5},
+};
+const WORKER_TYPES=[
+  {name:'Bean Eater',  charKey:'char1',gasType:'normal',   fartInterval:3000,unlockTime:0},
+  {name:'Chili Guy',   charKey:'char2',gasType:'explosive',fartInterval:4500,unlockTime:0},
+  {name:'Protein Bro', charKey:'char3',gasType:'dense',    fartInterval:5500,unlockTime:0},
+  {name:'Office Intern',charKey:'char1',gasType:'silent',  fartInterval:2200,unlockTime:0},
+  {name:'Garlic Guy',  charKey:'char2',gasType:'dense',    fartInterval:3500,unlockTime:120000,color:'#9933cc'},
+  {name:'Bean Queen',  charKey:'char3',gasType:'normal',   fartInterval:2000,unlockTime:180000,twins:true,color:'#cc3366'},
+];
+const MDEFS=[
+  {type:T.FAN,       label:'Fan',        cost:20, color:'#2299ff',key:'1',imgKey:'mach1'},
+  {type:T.FILTER,    label:'Filter',     cost:30, color:'#888888',key:'2',imgKey:'mach2'},
+  {type:T.COMPRESSOR,label:'Compressor', cost:50, color:'#ff4444',key:'3',imgKey:'mach3'},
+  {type:T.TANK,      label:'Tank',       cost:40, color:'#ffaa00',key:'4',imgKey:'mach4'},
+  {type:T.DOCK,      label:'Dock',       cost:60, color:'#00cc44',key:'5',imgKey:'mach1'},
+  {type:T.PIPE,      label:'Pipe',       cost:0,  color:'#667788',key:'6',imgKey:null},
+];
+const UPGRADES={
+  [T.FAN]:        {costs:[30,50],descs:['Range +50px','Turbo pull ×1.5']},
+  [T.FILTER]:     {costs:[40,60],descs:['3× faster cycle','Pressure drop ×2']},
+  [T.COMPRESSOR]: {costs:[55,80],descs:['Needs 4 gas (was 5)','Timer 600ms']},
+  [T.TANK]:       {costs:[45,65],descs:['Capacity 80','Capacity 120']},
+  [T.DOCK]:       {costs:[70,100],descs:['$35/ship','$55/ship + faster']},
+};
+const DIFF={
+  easy:   {pressureRate:0.5,label:'Easy',   color:'#44ff44'},
+  normal: {pressureRate:1.0,label:'Normal', color:'#ffff44'},
+  hard:   {pressureRate:1.5,label:'Hard',   color:'#ff4444'},
+  endless:{pressureRate:1.2,label:'Endless',color:'#ff44ff'},
+};
+const GAME_DUR=5*60*1000;
+const SHOP_ITEMS=[
+  {id:'tablet',  label:'Anti-gas Tablet', icon:'💊', cost:15, desc:'Slow 1 worker → 50% fart rate for 20s. Click a worker.'},
+  {id:'beans',   label:'Feed Beans',      icon:'🫘', cost:20, desc:'Boost 1 worker → 2× fart rate, potency×2.5 for 15s. Click a worker.'},
+  {id:'flush',   label:'Emergency Flush', icon:'🚿', cost:40, desc:'Instantly remove 15 pressure. No worker click needed.'},
+  {id:'order',   label:'Chilli Delivery', icon:'🌶', cost:30, desc:'All workers eat chilli → mega farts for 10s! Pressure risk!'},
+];
+
+// ============================================================
+//  LEADERBOARD
+// ============================================================
+function loadLB(){try{return JSON.parse(localStorage.getItem('fartFactoryLB')||'[]');}catch(e){return[];}}
+function saveLB(lb){try{localStorage.setItem('fartFactoryLB',JSON.stringify(lb.slice(0,10)));}catch(e){}}
+function addScore(score,diff){const lb=loadLB();lb.push({score,diff,date:new Date().toLocaleDateString()});lb.sort((a,b)=>b.score-a.score);saveLB(lb);}
+function loadCampaign(){try{return{unlocked:parseInt(localStorage.getItem('ff_unlocked')||'1'),scores:JSON.parse(localStorage.getItem('ff_cscores')||'{}')};}catch(e){return{unlocked:1,scores:{}};}}
+function saveCampaign(){try{localStorage.setItem('ff_unlocked',String(campaignUnlocked));localStorage.setItem('ff_cscores',JSON.stringify(campaignScores));}catch(e){}}
+
+// ============================================================
+//  LEVELS (Campaign)
+// ============================================================
+const LEVELS=[
+  {num:1,name:'First Whiff',   icon:'💨',desc:'Survive 2 minutes',         obj:{type:'survive',dur:120000},money:150,pMult:0.5,events:false,tools:[T.FAN,T.FILTER],         tip:'Build a Fan near workers, then a Filter to clean the gas!'},
+  {num:2,name:'Bottled Up',    icon:'🧪',desc:'Ship 1 canister',            obj:{type:'ship',count:1},     money:200,pMult:1.0,events:false,tools:'all',                     tip:'Fan→Compressor→Tank→Dock is your money chain!'},
+  {num:3,name:'Gas Rush',      icon:'💣',desc:'Ship 5 canisters',           obj:{type:'ship',count:5},     money:150,pMult:1.0,events:true, tools:'all',                     tip:'Random events spike pressure — keep Filters running!'},
+  {num:4,name:'Timed Delivery',icon:'⏱', desc:'Ship 8 canisters in 3 min', obj:{type:'ship_timed',count:8,dur:180000},money:150,pMult:1.0,events:true,tools:'all',         tip:'Upgrade your Dock and watch the market — time is short!'},
+  {num:5,name:'Shoestring',    icon:'💸',desc:'Ship 10 canisters — $80 start',obj:{type:'ship',count:10}, money:80, pMult:1.2,events:true, tools:'all',                     tip:'Every dollar counts. Plan before you spend!'},
+];
+
+// ============================================================
+//  PARTICLE POOL
+// ============================================================
+const POOL=Array.from({length:400},()=>({active:false,type:'normal',x:0,y:0,vx:0,vy:0,volume:1,potency:1,age:0,maxAge:0}));
+function getP(){for(const p of POOL)if(!p.active)return p;return null;}
+
+// ============================================================
+//  GAS POTENCY COLOR
+// ============================================================
+function potencyColor(potency,alpha=0.85){
+  // pale yellow-green → bright green → neon
+  const h=Math.max(60, 120-(potency-1)*20);
+  const s=Math.min(100, 50+potency*20);
+  const l=Math.min(70, 40+potency*8);
+  return `hsla(${h},${s}%,${l}%,${alpha})`;
+}
+
+// ============================================================
+//  STATE
+// ============================================================
+let state='loading', selectedDiff='normal', selTool=T.FAN; // selTool can also be 'repair'
+let grid=[], workers=[], machines=[], explosions=[], alerts=[];
+let score=0, money=150, pressure=0, gameTime=0, lastTime=0, gameRunning=false;
+let warningPlayed=false, lastEventTime=0, eventInterval=0;
+let totalProcessed=0, peakPressure=0, canisterCount=0;
+let mouseCol=-1, mouseRow=-1;
+let isPipeDrawing=false;
+let showShop=false, shopAction=null; // shopAction = {id} waiting for worker click
+let marketMult=1.0;
+let workerSpawned={garlic:false, queen:false};
+// Campaign state
+let currentLevel=null; // null=free play, 1-5=campaign level
+let levelPressureMult=1.0, levelEventsOn=true, levelAllowedTools='all';
+let {unlocked:campaignUnlocked, scores:campaignScores}=loadCampaign();
+
+// ============================================================
+//  INIT
+// ============================================================
+function initGame(lvlNum){
+  currentLevel=lvlNum||null;
+  const lv=lvlNum?LEVELS[lvlNum-1]:null;
+  levelPressureMult=lv?lv.pMult:DIFF[selectedDiff].pressureRate;
+  levelEventsOn=lv?lv.events:true;
+  levelAllowedTools=lv?lv.tools:'all';
+
+  grid=[];
+  for(let r=0;r<ROWS;r++){grid[r]=[];for(let c=0;c<COLS;c++)grid[r][c]=T.EMPTY;}
+  workers=[]; for(const p of POOL)p.active=false;
+  machines=[]; explosions=[]; alerts=[];
+  score=0; money=lv?lv.money:150; pressure=0; gameTime=0;
+  warningPlayed=false; lastEventTime=0; eventInterval=(10+Math.random()*10)*1000;
+  totalProcessed=0; peakPressure=0; canisterCount=0;
+  selTool=Array.isArray(levelAllowedTools)?levelAllowedTools[0]:T.FAN;
+  showShop=false; shopAction=null; marketMult=1.0;
+  workerSpawned={garlic:false,queen:false};
+
+  const starts=[[2,4],[2,8],[2,12],[6,4],[6,12],[10,7],[14,4],[14,12]];
+  starts.forEach((pos,i)=>{
+    const wt=WORKER_TYPES[i%4];
+    workers.push(makeWorker(pos[0],pos[1],wt));
+  });
+  addAlert('💨 Fart Factory is OPEN!','#44ff44',3000);
+}
+
+function makeWorker(col,row,wt){
+  return {col,row,gasType:wt.gasType,charKey:wt.charKey,name:wt.name,color:wt.color||null,
+    twins:wt.twins||false,
+    fartTimer:Math.random()*wt.fartInterval,baseFartInterval:wt.fartInterval,
+    isInToxic:false,toxicTimer:0,faintTimer:0,isFainted:false,
+    bobOffset:Math.random()*Math.PI*2,
+    boost:null, // {type,timer,maxTimer}
+  };
+}
+
+// ============================================================
+//  MACHINES
+// ============================================================
+function placeMachine(col,row,type){
+  if(type===T.PIPE){placePipe(col,row);return;}
+  const def=MDEFS.find(d=>d.type===type);
+  if(!def||money<def.cost){addAlert(`💸 Need $${def?def.cost:'?'}`,'#ff4444',1800);return false;}
+  if(grid[row][col]!==T.EMPTY)return false;
+  if(workers.some(w=>w.col===col&&w.row===row))return false;
+  grid[row][col]=type;
+  machines.push({type,col,row,volume:0,maxVolume:type===T.TANK?50:20,timer:0,level:0,broken:false,health:100,wearAcc:0});
+  money-=def.cost;
+  return true;
+}
+function placePipe(col,row){
+  if(grid[row][col]===T.EMPTY&&!workers.some(w=>w.col===col&&w.row===row)){
+    grid[row][col]=T.PIPE;
+  }
+}
+function removeTile(col,row){
+  const t=grid[row][col];
+  if(t===T.EMPTY)return;
+  if(t===T.PIPE){grid[row][col]=T.EMPTY;return;}
+  const idx=machines.findIndex(m=>m.col===col&&m.row===row);
+  if(idx!==-1){
+    const def=MDEFS.find(d=>d.type===machines[idx].type);
+    if(def)money+=Math.floor(def.cost*0.5);
+    machines.splice(idx,1);
+  }
+  grid[row][col]=T.EMPTY;
+}
+function upgradeMachine(col,row){
+  const m=machines.find(m=>m.col===col&&m.row===row);
+  if(!m||m.broken){if(m&&m.broken){repairMachine(col,row);}return;}
+  const ud=UPGRADES[m.type];
+  if(!ud||m.level>=ud.costs.length){addAlert('⭐ Already max level!','#ffff44',1500);return;}
+  const cost=ud.costs[m.level];
+  if(money<cost){addAlert(`💸 Upgrade costs $${cost}`,'#ff4444',2000);return;}
+  money-=cost; m.level++;
+  if(m.type===T.TANK) m.maxVolume=m.level===1?80:120;
+  addAlert(`⬆ ${MDEFS.find(d=>d.type===m.type).label} Lv${m.level}! (${ud.descs[m.level-1]})`,'#ffff44',2500);
+  playShip();
+}
+function repairMachine(col,row){
+  const m=machines.find(m=>m.col===col&&m.row===row);
+  if(!m||!m.broken)return;
+  if(money<20){addAlert('💸 Repair costs $20','#ff4444',1800);return;}
+  money-=20; m.broken=false;
+  addAlert('🔧 Machine repaired!','#44ff44',1800);
+  playCoin();
+}
+// Repair-mode click: each click costs $5, restores 25 health. Broken machines cost $20 to fix.
+function repairClick(col,row){
+  const m=machines.find(m=>m.col===col&&m.row===row);
+  if(!m)return;
+  if(m.broken){
+    if(money<20){addAlert('💸 Full repair costs $20','#ff4444',1800);return;}
+    money-=20; m.broken=false; m.health=30;
+    addAlert('🔧 Machine fixed! ($20)','#44ff44',2000); playCoin();
+  } else if(m.health<100){
+    const restoreAmt=25, cost=5;
+    if(money<cost){addAlert('💸 Need $5 to repair','#ff4444',1500);return;}
+    money-=cost; m.health=Math.min(100,m.health+restoreAmt);
+    // No alert spam — just a small coin sound
+    playCoin();
+  } else {
+    addAlert('✅ Machine is in perfect condition!','#44ff44',1500);
+  }
+}
+
+// ============================================================
+//  NETWORK: BFS through pipe tiles + adjacency
+// ============================================================
+function getConnected(col,row){
+  const visited=new Set([`${col},${row}`]);
+  const queue=[[col,row]];
+  const result=[];
+  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+  while(queue.length){
+    const[c,r]=queue.shift();
+    for(const[dc,dr]of dirs){
+      const nc=c+dc,nr=r+dr;
+      if(nc<0||nr<0||nc>=COLS||nr>=ROWS)continue;
+      const key=`${nc},${nr}`;
+      if(visited.has(key))continue;
+      const t=grid[nr][nc];
+      if(t===T.EMPTY)continue;
+      visited.add(key);
+      if(t===T.PIPE){queue.push([nc,nr]);}
+      else{
+        const m=machines.find(m=>m.col===nc&&m.row===nr);
+        if(m)result.push(m);
+        queue.push([nc,nr]); // continue through machines too (chain)
+      }
+    }
+  }
+  return result;
+}
+
+// ============================================================
+//  GAS
+// ============================================================
+function spawnGas(col,row,type,vol=1,potency=1){
+  const p=getP();if(!p)return;
+  p.active=true;p.type=type;p.potency=potency;
+  p.x=col*TILE+TILE/2+(Math.random()-.5)*10;
+  p.y=row*TILE+HUD_H+TILE/2+(Math.random()-.5)*10;
+  p.vx=(Math.random()-.5)*0.5;
+  p.vy=-(0.3+Math.random()*0.5);
+  if(type==='dense')p.vy*=0.4;
+  p.volume=vol; p.age=0; p.maxAge=4000+Math.random()*2000;
+}
+
+function addAlert(text,color='#fff',dur=2500){alerts.push({text,color,duration:dur,elapsed:0});}
+
+// ============================================================
+//  UPDATE
+// ============================================================
+function checkLevelWin(){
+  if(!currentLevel)return;
+  const lv=LEVELS[currentLevel-1];
+  const obj=lv.obj;
+  if(obj.type==='survive'&&gameTime>=obj.dur){endGame(true);return;}
+  if(obj.type==='ship'&&canisterCount>=obj.count){endGame(true);return;}
+  if(obj.type==='ship_timed'){
+    if(canisterCount>=obj.count){endGame(true);return;}
+    if(gameTime>=obj.dur){endGame(false);return;} // time ran out
+  }
+}
+
+function update(dt){
+  if(!gameRunning)return;
+  const dr=levelPressureMult;
+  const isEndless=!currentLevel&&selectedDiff==='endless';
+  gameTime+=dt;
+  // Free play time limit (campaign uses checkLevelWin instead)
+  if(!currentLevel&&!isEndless&&gameTime>=GAME_DUR){endGame(true);return;}
+  if(currentLevel)checkLevelWin();
+
+  // Market price: sine wave 0.4–1.6
+  marketMult=1.0+0.6*Math.sin(gameTime/30000);
+
+  // Unlock new workers
+  if(!workerSpawned.garlic&&gameTime>=120000){
+    workerSpawned.garlic=true;
+    spawnNewWorker(WORKER_TYPES[4]);
+    addAlert('🧄 Garlic Guy joined the factory!','#cc88ff',3000);
+  }
+  if(!workerSpawned.queen&&gameTime>=180000){
+    workerSpawned.queen=true;
+    spawnNewWorker(WORKER_TYPES[5]);
+    addAlert('👸 Bean Queen joined the factory!','#ff88cc',3000);
+  }
+
+  // Workers
+  for(const w of workers){
+    // Boost countdown
+    if(w.boost){
+      w.boost.timer-=dt;
+      if(w.boost.timer<=0){w.boost=null;}
+    }
+    const fartMult=w.boost?.type==='tablet'?2.5:w.boost?.type==='beans'?0.5:w.boost?.type==='meal'?0.35:w.boost?.type==='chilli'?0.3:1.0;
+    const potencyBoost=w.boost?.type==='beans'?2.5:w.boost?.type==='meal'?3.0:w.boost?.type==='chilli'?2.8:w.boost?.type==='tablet'?0.5:1.0;
+    const curInterval=w.baseFartInterval*fartMult;
+
+    if(w.isFainted){w.faintTimer-=dt;if(w.faintTimer<=0){w.isFainted=false;addAlert(`😤 ${w.name} is back!`,'#ffff44',1500);}continue;}
+    w.fartTimer-=dt;
+    if(w.fartTimer<=0){
+      w.fartTimer=curInterval*(0.8+Math.random()*0.4);
+      spawnGas(w.col,w.row,w.gasType,1,potencyBoost);
+      if(w.twins)spawnGas(w.col,w.row,w.gasType,1,potencyBoost); // Bean Queen farts twice
+      playFartSnd();
+    }
+    const nearby=countNearby(w.col,w.row,2);
+    if(nearby>5){w.toxicTimer+=dt;w.isInToxic=true;if(w.toxicTimer>5000){w.isFainted=true;w.faintTimer=8000;w.toxicTimer=0;addAlert(`😵 ${w.name} fainted!`,'#ff8800',2500);}}
+    else{w.toxicTimer=Math.max(0,w.toxicTimer-dt*0.5);w.isInToxic=false;}
+  }
+
+  // Particles → fans
+  const fans=machines.filter(m=>m.type===T.FAN&&!m.broken);
+  for(const p of POOL){
+    if(!p.active)continue;
+    p.age+=dt;
+    if(p.age>=p.maxAge){p.active=false;continue;}
+    let fx=0,fy=0;
+    for(const fan of fans){
+      const lv=fan.level||0;
+      const range=130+lv*50;
+      const str=lv>=2?100:lv>=1?80:65;
+      const fx2=fan.col*TILE+TILE/2,fy2=fan.row*TILE+HUD_H+TILE/2;
+      const dx=fx2-p.x,dy=fy2-p.y,dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist<range&&dist>1){
+        const s=str/dist;fx+=(dx/dist)*s;fy+=(dy/dist)*s;
+        if(dist<TILE*0.7){p.active=false;fan.volume+=p.volume;break;}
+      }
+    }
+    p.vx+=fx*dt*0.001;p.vy+=fy*dt*0.001;
+    p.vy-=0.0002*dt;p.vx*=0.995;p.vy*=0.995;
+    p.x+=p.vx*dt*0.06;p.y+=p.vy*dt*0.06;
+    if(p.x<0){p.x=0;p.vx=Math.abs(p.vx);}
+    if(p.x>W){p.x=W;p.vx=-Math.abs(p.vx);}
+    if(p.y<HUD_H){p.y=HUD_H;p.vy=Math.abs(p.vy)*0.3;}
+    if(p.y>CANVAS_H){p.active=false;}
+  }
+
+  // Machines
+  for(const m of machines){
+    if(m.broken)continue;
+    m.timer+=dt;
+    const lv=m.level||0;
+
+    // Health degrades based on workload. Higher level = slightly more wear.
+    // Slow machines degrade slowly; active ones wear faster.
+    const wearMult=(1+lv*0.3); // Lv0=1x, Lv1=1.3x, Lv2=1.6x wear
+    // Slow down processing when worn (below 50% health reduces speed 50%)
+    const speedMod=m.health>=50?1.0:0.5+(m.health/50)*0.5;
+
+    if(m.type===T.FILTER&&m.volume>0){
+      const baseInterval=lv>=2?250:lv>=1?330:500;
+      const interval=baseInterval/speedMod;
+      const amount=lv>=2?4:lv>=1?3:2;
+      const pdrop=lv>=2?2:lv>=1?1:0.5;
+      if(m.timer>interval){
+        m.timer=0;const proc=Math.min(m.volume,amount);m.volume-=proc;
+        pressure=Math.max(0,pressure-proc*pdrop);score+=Math.floor(proc*5);totalProcessed+=proc;
+        m.moneyAcc=(m.moneyAcc||0)+proc*2; // $2 per unit processed
+        if(m.moneyAcc>=1){money+=Math.floor(m.moneyAcc);m.moneyAcc%=1;}
+        m.wearAcc+=0.08*wearMult; // wear per process cycle
+      }
+
+    }else if(m.type===T.COMPRESSOR){
+      const need=lv>=2?3:lv>=1?4:5;
+      const baseInterval=lv>=2?600:lv>=1?800:1000;
+      const interval=baseInterval/speedMod;
+      if(m.volume>=need&&m.timer>interval){
+        m.timer=0;m.volume-=need;
+        const tanks=getConnected(m.col,m.row).filter(x=>x.type===T.TANK&&x.volume<x.maxVolume&&!x.broken);
+        if(tanks.length){tanks[0].volume=Math.min(tanks[0].maxVolume,tanks[0].volume+3);score+=15;money+=5;totalProcessed+=need;}
+        m.wearAcc+=0.15*wearMult; // compressors wear hard
+      }
+
+    }else if(m.type===T.TANK&&m.volume>m.maxVolume){
+      const ov=m.volume-m.maxVolume;m.volume=m.maxVolume;pressure+=ov*0.5*dr;
+      m.wearAcc+=ov*0.05*wearMult; // overflow stresses tank
+
+    }else if(m.type===T.DOCK){
+      const earn=lv>=2?55:lv>=1?35:20;
+      const baseInterval=lv>=2?1000:lv>=1?1500:2000;
+      const interval=baseInterval/speedMod;
+      const tanks=getConnected(m.col,m.row).filter(x=>x.type===T.TANK&&x.volume>=3&&!x.broken);
+      if(tanks.length&&m.timer>interval){
+        m.timer=0;tanks[0].volume-=3;
+        const earned=Math.round(earn*marketMult);
+        money+=earned;score+=50;canisterCount++;
+        playShip();
+        addAlert(`🚚 Shipped! +$${earned} +50pts`,'#00ff88',1500);
+        m.wearAcc+=0.1*wearMult;
+      }
+    }
+
+    // Apply accumulated wear (batched to avoid per-frame health changes)
+    if(m.wearAcc>=1){
+      m.health=Math.max(0,m.health-Math.floor(m.wearAcc));
+      m.wearAcc=m.wearAcc%1;
+      if(m.health<=0&&!m.broken){
+        m.broken=true;m.health=0;
+        addAlert(`⚠ ${MDEFS.find(d=>d.type===m.type).label} worn out! Use 🔧 Repair tool!`,'#ff8800',4000);
+      } else if(m.health<=25&&!m.broken){
+        // Warn at low health, occasionally
+        if(Math.random()<0.05)addAlert(`⚠ ${MDEFS.find(d=>d.type===m.type).label} wearing out! Repair soon.`,'#ff8800',2500);
+      }
+    }
+
+    if(m.type===T.FAN&&m.volume>m.maxVolume){pressure+=(m.volume-m.maxVolume)*0.3*dr;m.volume=m.maxVolume;}
+    if(m.type===T.FAN&&m.volume>2&&m.timer>300){
+      m.timer=0;
+      const downstream=getConnected(m.col,m.row).filter(x=>(x.type===T.FILTER||x.type===T.COMPRESSOR||x.type===T.TANK)&&x.volume<x.maxVolume&&!x.broken);
+      if(downstream.length){
+        const flow=Math.min(m.volume,2);
+        const share=flow/downstream.length;
+        for(const d of downstream){d.volume=Math.min(d.maxVolume,d.volume+share);m.volume-=share;}
+        m.wearAcc+=0.04*(1+(m.level||0)*0.3); // fans wear slowly but constantly
+      }
+    }
+  }
+
+  // Pressure from particles
+  let pp=0;
+  for(const p of POOL)if(p.active)pp+=p.volume*GAS[p.type].density*p.potency*0.1*dr;
+  pressure+=pp*dt*0.0007; // ~0.9/s with 8 workers — enough to feel urgent
+  pressure=Math.max(0,pressure);
+  peakPressure=Math.max(peakPressure,pressure);
+
+  if(Math.floor(gameTime/60000)>Math.floor((gameTime-dt)/60000)){score+=100;money+=25;addAlert('⏱ +100pts +$25 survived a minute!','#ffff44',2000);}
+
+  if(pressure>=70&&!warningPlayed){warningPlayed=true;playWarning();addAlert('⚠ PRESSURE CRITICAL! Build Fans & Filters!','#ff8800',3000);}
+  if(pressure<65)warningPlayed=false;
+  if(pressure>=100){playExplosion();triggerExplosion();endGame(false);return;}
+
+  if(levelEventsOn){lastEventTime+=dt;if(lastEventTime>=eventInterval){lastEventTime=0;eventInterval=(10+Math.random()*10)*1000;triggerEvent();}}
+
+  for(let i=alerts.length-1;i>=0;i--){alerts[i].elapsed+=dt;if(alerts[i].elapsed>=alerts[i].duration)alerts.splice(i,1);}
+  for(let i=explosions.length-1;i>=0;i--){explosions[i].age+=dt;if(explosions[i].age>explosions[i].maxAge)explosions.splice(i,1);}
+
+  if(isEndless&&Math.floor(gameTime/30000)>Math.floor((gameTime-dt)/30000)){score+=200;addAlert('⚡ Endless bonus! +200pts','#ff44ff',2000);}
+}
+
+function countNearby(col,row,r){
+  let n=0;const px=col*TILE+TILE/2,py=row*TILE+HUD_H+TILE/2;
+  for(const p of POOL){if(!p.active)continue;const dx=p.x-px,dy=p.y-py;if(Math.sqrt(dx*dx+dy*dy)<r*TILE)n++;}
+  return n;
+}
+function spawnNewWorker(wt){
+  // Find empty spot not occupied
+  for(let attempt=0;attempt<30;attempt++){
+    const col=Math.floor(Math.random()*COLS);
+    const row=Math.floor(Math.random()*ROWS);
+    if(grid[row][col]===T.EMPTY&&!workers.some(w=>w.col===col&&w.row===row)){
+      workers.push(makeWorker(col,row,wt));
+      return;
+    }
+  }
+}
+function triggerExplosion(){
+  for(let i=0;i<35;i++)explosions.push({x:Math.random()*W,y:HUD_H+Math.random()*H,r:20+Math.random()*70,age:0,maxAge:900+Math.random()*400});
+}
+function triggerEvent(){
+  const evts=[
+    // Mega fart
+    ()=>{const w=workers.filter(x=>!x.isFainted);if(!w.length)return;const pick=w[Math.floor(Math.random()*w.length)];for(let i=0;i<8;i++)spawnGas(pick.col,pick.row,pick.gasType,3,2.0);pressure+=5;playFartSnd();addAlert(`💥 ${pick.name} MEGA FART! +5 pressure`,'#ff4444',3000);},
+    // Mum drops off a meal
+    ()=>{const w=workers.filter(x=>!x.isFainted);if(!w.length)return;const pick=w[Math.floor(Math.random()*w.length)];pick.boost={type:'meal',timer:15000,maxTimer:15000};addAlert(`👩 Mum dropped off a meal for ${pick.name}! 💥 Potency MAX!`,'#ffaa00',3500);playFartSnd();},
+    // Silent but deadly
+    ()=>{const col=Math.floor(Math.random()*COLS),row=Math.floor(Math.random()*ROWS);for(let i=0;i<5;i++)spawnGas(col,row,'silent',1.5,1.5);addAlert('👻 Silent But Deadly...','#aaffaa',2500);},
+    // Pipe rupture
+    ()=>{const m=machines.filter(x=>!x.broken);if(!m.length)return;const pick=m[Math.floor(Math.random()*m.length)];const l=Math.min(pick.volume,5);pick.volume-=l;pressure+=l*0.5;addAlert('💢 Pipe Rupture! Gas leaked!','#ff8800',2500);},
+    // Gas leak
+    ()=>{pressure+=8;addAlert('🔴 GAS LEAK! Seals failing!','#ff4444',3000);playWarning();},
+    // Machine breaks down
+    ()=>{const m=machines.filter(x=>!x.broken);if(!m.length)return;const pick=m[Math.floor(Math.random()*m.length)];pick.broken=true;addAlert(`🔧 ${MDEFS.find(d=>d.type===pick.type).label} broke down! Click it to repair ($20)`,'#ff8800',4000);},
+    // Bean delivery
+    ()=>{const w=workers.filter(x=>!x.isFainted);if(!w.length)return;const pick=w[Math.floor(Math.random()*w.length)];pick.boost={type:'beans',timer:12000,maxTimer:12000};addAlert(`🫘 A bag of beans landed near ${pick.name}!`,'#88ff44',3000);playFartSnd();},
+  ];
+  evts[Math.floor(Math.random()*evts.length)]();
+}
+function endGame(won){
+  gameRunning=false;
+  const eff=peakPressure>0?totalProcessed/peakPressure:1;
+  score=Math.floor(score*(1+eff));
+  if(currentLevel){
+    if(won){
+      // Unlock next level
+      if(currentLevel>=campaignUnlocked)campaignUnlocked=Math.min(currentLevel+1,LEVELS.length+1);
+      // Save best score for this level
+      if(!campaignScores[currentLevel]||score>campaignScores[currentLevel])campaignScores[currentLevel]=score;
+      saveCampaign();
+    }
+    state='levelover';
+  } else {
+    addScore(score,selectedDiff);
+    state='gameover';
+  }
+}
+
+// ============================================================
+//  SHOP LOGIC
+// ============================================================
+function buyShopItem(itemId){
+  const item=SHOP_ITEMS.find(x=>x.id===itemId);
+  if(!item)return;
+  if(money<item.cost){addAlert(`💸 Need $${item.cost}`,'#ff4444',1800);return;}
+  if(item.id==='flush'){money-=item.cost;pressure=Math.max(0,pressure-15);addAlert('🚿 Emergency Flush! -15 pressure','#44ffff',2000);playShip();showShop=false;return;}
+  if(item.id==='order'){
+    money-=item.cost;
+    for(const w of workers){if(!w.isFainted)w.boost={type:'chilli',timer:10000,maxTimer:10000};}
+    addAlert('🌶 CHILLI DELIVERY! ALL workers are gassing it!','#ff4444',3500);playFartSnd();showShop=false;
+    return;
+  }
+  money-=item.cost;
+  shopAction={id:itemId};
+  showShop=false;
+  addAlert(item.id==='tablet'?'💊 Click a worker to apply tablet':'🫘 Click a worker to feed beans','#ffff44',4000);
+}
+function applyShopActionToWorker(workerIdx){
+  if(!shopAction)return;
+  const w=workers[workerIdx];
+  if(!w){shopAction=null;return;}
+  if(shopAction.id==='tablet'){w.boost={type:'tablet',timer:20000,maxTimer:20000};addAlert(`💊 ${w.name} slowed down for 20s`,'#aaffff',2000);}
+  else if(shopAction.id==='beans'){w.boost={type:'beans',timer:15000,maxTimer:15000};addAlert(`🫘 ${w.name} is BOOSTED for 15s!`,'#88ff44',2000);playFartSnd();}
+  shopAction=null;
+}
+
+// ============================================================
+//  HELPERS
+// ============================================================
+function drawRR(x,y,w,h,r,fill,stroke){
+  ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.stroke();}
+}
+function drawBtn(x,y,w,h,label,bg,fg='#111'){
+  drawRR(x,y,w,h,5,bg,'rgba(255,255,255,0.2)');
+  ctx.fillStyle=fg;ctx.font='bold 12px Courier New';ctx.textAlign='center';
+  ctx.fillText(label,x+w/2,y+h/2+5);
+}
+function inBtn(cx,cy,x,y,w,h){return cx>=x&&cx<=x+w&&cy>=y&&cy<=y+h;}
+
+// ============================================================
+//  DRAW: LOADING
+// ============================================================
+function drawLoading(){
+  ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);
+  ctx.fillStyle='#ffff44';ctx.font='bold 22px Courier New';ctx.textAlign='center';
+  ctx.fillText('💨 Loading Fart Factory...',W/2,CANVAS_H/2-20);
+  const pct=assetsTotal>0?assetsLoaded/assetsTotal:0;
+  ctx.fillStyle='#333';ctx.fillRect(W/2-120,CANVAS_H/2+10,240,16);
+  ctx.fillStyle='#44ff44';ctx.fillRect(W/2-120,CANVAS_H/2+10,240*pct,16);
+  ctx.strokeStyle='#666';ctx.lineWidth=1;ctx.strokeRect(W/2-120,CANVAS_H/2+10,240,16);
+}
+
+// ============================================================
+//  DRAW: TITLE
+// ============================================================
+function drawTitle(){
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.62)';ctx.fillRect(0,0,W,CANVAS_H);}
+  else{ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);}
+  const t=Date.now()*0.001;
+  for(let i=0;i<15;i++){const x=(Math.sin(t*0.3+i*1.4)*0.5+0.5)*W,y=(Math.cos(t*0.2+i*0.9)*0.5+0.5)*CANVAS_H;ctx.beginPath();ctx.arc(x,y,8+Math.sin(t+i)*4,0,Math.PI*2);ctx.fillStyle=`hsla(${i*24},70%,55%,0.22)`;ctx.fill();}
+  drawRR(W/2-230,55,460,108,12,'rgba(0,0,0,0.72)');
+  ctx.fillStyle='#ffff44';ctx.font='bold 44px Courier New';ctx.textAlign='center';ctx.fillText('💨 FART FACTORY',W/2,115);
+  ctx.fillStyle='#aaffaa';ctx.font='14px Courier New';ctx.fillText('An Absurdist Gas Processing Simulator',W/2,143);
+  drawBtn(W/2-110,178,220,44,'🗺  CAMPAIGN','#44ff44');
+  drawBtn(W/2-110,232,220,44,'▶  FREE PLAY','#6688ff');
+  drawBtn(W/2-110,286,220,44,'📖  HOW TO PLAY','#66aaff');
+  drawBtn(W/2-110,340,220,44,'🏆  LEADERBOARD','#ffff44');
+  const chars=['char1','char2','char3'];
+  const titleFrame=Math.floor(Date.now()/700)%2;
+  chars.forEach((k,i)=>{const img=IMAGES[k+(titleFrame===0?'a':'b')]||IMAGES[k+'a'];if(img){ctx.imageSmoothingEnabled=false;ctx.drawImage(img,140+i*120,368,46,46);}});
+  const names=['Bean Eater','Chili Guy','Protein Bro','Office Intern'];
+  ctx.fillStyle='#aaa';ctx.font='10px Courier New';ctx.textAlign='center';
+  names.forEach((n,i)=>ctx.fillText(n,80+i*120+23,424));
+  ctx.fillStyle='#555';ctx.font='11px Courier New';ctx.fillText('Survive 5 minutes without exploding!',W/2,460);
+}
+
+// ============================================================
+//  DRAW: DIFFICULTY
+// ============================================================
+function drawDifficulty(){
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(0,0,W,CANVAS_H);}
+  else{ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);}
+  ctx.fillStyle='#ffff44';ctx.font='bold 28px Courier New';ctx.textAlign='center';ctx.fillText('SELECT DIFFICULTY',W/2,68);
+  const diffs=['easy','normal','hard','endless'],icons=['😌','😐','😤','♾'],descs=['Pressure 50% speed','Balanced challenge','Pressure 1.5× faster','No time limit'],colors=['#44ff44','#ffff44','#ff4444','#ff44ff'];
+  diffs.forEach((d,i)=>{
+    const y=108+i*76,sel=selectedDiff===d;
+    drawRR(W/2-170,y,340,60,8,sel?colors[i]:'rgba(40,40,40,0.85)',sel?'#fff':'#444');
+    ctx.fillStyle=sel?'#111':colors[i];ctx.font=`bold 17px Courier New`;ctx.textAlign='center';ctx.fillText(`${icons[i]}  ${DIFF[d].label}`,W/2,y+20);
+    ctx.fillStyle=sel?'#333':'#999';ctx.font='11px Courier New';ctx.fillText(descs[i],W/2,y+40);
+  });
+  drawBtn(W/2-100,448,200,42,'▶  START GAME','#44ff44');
+  drawBtn(W/2-220,448,100,42,'◀  BACK','#555','#fff');
+}
+
+// ============================================================
+//  DRAW: INSTRUCTIONS
+// ============================================================
+const PAGES=[
+  {title:'🎯 GOAL',lines:['Run a factory: workers eat beans → produce gas.','Build machines to process gas before pressure','reaches 100 and causes a FACTORY EXPLOSION!','','Survive 5 minutes to win (or go Endless).','','💨 Gas fills up automatically from workers.','⚠  Pressure 70+ = warning zone.','💥  Pressure 100 = BOOM. Game over.']},
+  {title:'🔧 MACHINES',lines:['[1] Fan $20   — Sucks gas in. Place near workers.','  ⬆ Upgrade: wider range, stronger pull','[2] Filter $30 — Reduces pressure. Earns $1/unit.','  ⬆ Upgrade: faster cycle, bigger pressure drop','[3] Comp. $50  — Makes canisters. Earns $5/run.','  ⬆ Upgrade: less gas needed, faster','[4] Tank $40   — Stores canisters. ⬆ More capacity.','[5] Dock $60   — Ships product. Earns $20–55.','  ⬆ Upgrade: earn more per shipment','CLICK existing machine → upgrade it (max ⭐⭐)','RIGHT-CLICK → remove (50% refund)']},
+  {title:'🪠 PIPES',lines:['[6] PIPE tool — drag to draw pipe routes.','','Pipes connect machines across the grid.','Gas flows from Fan → through pipes → Filter/Comp.','Compressor → pipes → Tank → pipes → Dock.','','WHY USE PIPES?','  • Multiple Fans can feed ONE Compressor','  • Multiple Filters all feed ONE Tank','  • ONE Dock can ship from many Tanks','  • Build efficient chain networks!','','Right-click a pipe tile to remove it.']},
+  {title:'🎮 CONTROLS & MONEY',lines:['LEFT CLICK empty → place selected machine/pipe','LEFT CLICK machine → upgrade it','RIGHT CLICK → remove tile (50% refund)','Keys 1–6 → select tool  |  B → toggle shop','','💰 HOW TO EARN MONEY:','  Filter processes gas    → +$1/unit','  Compressor run          → +$5','  Dock ships canister     → +$20–55','  Survive each minute     → +$25','','📈 Gas market price fluctuates (×0.4–×1.6)','   Wait for HIGH market to ship for big bucks!']},
+  {title:'🛒 SHOP (press B)',lines:['Open shop with B key or the SHOP button.','','💊 Anti-gas Tablet $15','   Slow 1 worker → 50% fart rate for 20s','   Click the worker AFTER buying.','','🫘 Feed Beans $20','   Boost 1 worker → 2× farts, potency ×2.5 for 15s','','🚿 Emergency Flush $40','   Instantly remove 15 pressure','','🌶 Chilli Delivery $30','   ALL workers mega-fart for 10s (pressure risk!)']},
+  {title:'👷 WORKERS & EVENTS',lines:['😐 Bean Eater  — Normal gas, farts ~3s','🌶 Chili Guy   — Explosive gas, high pressure','💪 Protein Bro — Dense gas, slow moving','💼 Office Intern — Silent (invisible) gas','🧄 Garlic Guy  — Unlocks at 2 minutes!','👸 Bean Queen  — Unlocks at 3 min, farts ×2!','','GAS POTENCY color:','  Pale green = mild   Bright green = normal','  Neon yellow-green = super potent ⚠','','EVENTS: Mega Fart, Mum\'s Meal, Pipe Rupture,','  Gas Leak, Machine Breakdown, Bean Delivery']},
+];
+let instrPage2=0;
+function drawInstructions(){
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,CANVAS_H);}else{ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);}
+  drawRR(38,15,W-76,CANVAS_H-55,12,'rgba(10,10,30,0.92)','#445');
+  const pg=PAGES[instrPage2];
+  ctx.fillStyle='#ffff44';ctx.font='bold 21px Courier New';ctx.textAlign='center';ctx.fillText(pg.title,W/2,55);
+  ctx.fillStyle='#ccc';ctx.font='12px Courier New';ctx.textAlign='left';
+  pg.lines.forEach((l,i)=>ctx.fillText(l,60,84+i*25));
+  PAGES.forEach((_,i)=>{ctx.beginPath();ctx.arc(W/2+(i-2.5)*18,CANVAS_H-46,4,0,Math.PI*2);ctx.fillStyle=i===instrPage2?'#ffff44':'#555';ctx.fill();});
+  ctx.fillStyle='#888';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText(`Page ${instrPage2+1} / ${PAGES.length}`,W/2,CANVAS_H-28);
+  if(instrPage2>0) drawBtn(52,CANVAS_H-68,88,32,'◀ PREV','#333','#fff');
+  if(instrPage2<PAGES.length-1) drawBtn(W-140,CANVAS_H-68,88,32,'NEXT ▶','#333','#fff');
+  else drawBtn(W-140,CANVAS_H-68,88,32,'▶ PLAY!','#44ff44');
+  drawBtn(W/2-44,CANVAS_H-68,88,32,'🏠 MENU','#445','#fff');
+}
+
+// ============================================================
+//  DRAW: LEADERBOARD
+// ============================================================
+function drawLeaderboard(){
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,CANVAS_H);}else{ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);}
+  drawRR(38,15,W-76,CANVAS_H-40,12,'rgba(10,10,30,0.92)','#445');
+  ctx.fillStyle='#ffff44';ctx.font='bold 24px Courier New';ctx.textAlign='center';ctx.fillText('🏆 LEADERBOARD',W/2,52);
+  const lb=loadLB();
+  if(!lb.length){ctx.fillStyle='#777';ctx.font='15px Courier New';ctx.fillText('No scores yet — play a game!',W/2,180);}
+  else{
+    const xs=[65,200,370,500];const hdrs=['#','Score','Difficulty','Date'];
+    ctx.fillStyle='#ffaa44';ctx.font='bold 12px Courier New';hdrs.forEach((h,i)=>{ctx.textAlign='left';ctx.fillText(h,xs[i],88);});
+    ctx.fillStyle='#334';ctx.fillRect(58,92,W-116,1);
+    lb.slice(0,10).forEach((e,i)=>{const y=114+i*28;ctx.fillStyle=i===0?'#ffff44':i<3?'#aaffaa':'#ccc';ctx.font=`${i<3?'bold ':''}12px Courier New`;[`${i+1}.`,`${e.score}`,e.diff||'?',e.date||''].forEach((v,j)=>{ctx.textAlign='left';ctx.fillText(v,xs[j],y);});});
+  }
+  drawBtn(W/2-110,CANVAS_H-62,100,34,'▶ PLAY','#44ff44');
+  drawBtn(W/2+10, CANVAS_H-62,100,34,'🏠 MENU','#445','#fff');
+}
+
+// ============================================================
+//  DRAW: GAME
+// ============================================================
+function drawGame(){
+  ctx.fillStyle='#1a1a2a';ctx.fillRect(0,0,W,HUD_H);
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,HUD_H,W,H);ctx.fillStyle='rgba(10,10,25,0.55)';ctx.fillRect(0,HUD_H,W,H);}
+  else{ctx.fillStyle='#1a1a2e';ctx.fillRect(0,HUD_H,W,H);}
+
+  // Grid lines
+  ctx.strokeStyle='rgba(100,120,200,0.12)';ctx.lineWidth=0.5;
+  for(let c=0;c<=COLS;c++){ctx.beginPath();ctx.moveTo(c*TILE,HUD_H);ctx.lineTo(c*TILE,CANVAS_H);ctx.stroke();}
+  for(let r=0;r<=ROWS;r++){ctx.beginPath();ctx.moveTo(0,HUD_H+r*TILE);ctx.lineTo(W,HUD_H+r*TILE);ctx.stroke();}
+
+  // Draw pipes
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)if(grid[r][c]===T.PIPE)drawPipeTile(c,r);
+
+  // Machines
+  for(const m of machines)drawMachine(m);
+
+  // Workers
+  const t=Date.now()*0.002;
+  for(let wi=0;wi<workers.length;wi++){
+    const w=workers[wi];
+    const x=w.col*TILE,y=w.row*TILE+HUD_H;
+    const bob=w.isFainted?4:Math.sin(t+w.bobOffset)*2;
+    if(w.isFainted)ctx.globalAlpha=0.45;
+    const frame=Math.floor(Date.now()/700)%2;
+    const frameKey=w.charKey+(frame===0?'a':'b');
+    const sprImg=IMAGES[frameKey]||IMAGES[w.charKey+'a'];
+    if(sprImg){ctx.imageSmoothingEnabled=false;ctx.drawImage(sprImg,x+2,y+2+bob,28,28);}
+    else{ctx.fillStyle=w.color||'#884422';ctx.fillRect(x+4,y+4+bob,24,24);}
+    // Boost indicator
+    if(w.boost&&!w.isFainted){
+      const icon=w.boost.type==='tablet'?'💊':w.boost.type==='beans'||w.boost.type==='order'?'🫘':w.boost.type==='chilli'?'🌶':'🍽';
+      ctx.font='11px serif';ctx.textAlign='center';ctx.fillText(icon,x+TILE/2,y+bob-2);
+      // Progress bar
+      const prog=w.boost.timer/w.boost.maxTimer;
+      ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(x,y+TILE-5,TILE,4);
+      ctx.fillStyle=w.boost.type==='tablet'?'#44ccff':'#ff8800';
+      ctx.fillRect(x,y+TILE-5,TILE*prog,4);
+    }
+    if(w.isInToxic&&!w.isFainted){ctx.fillStyle='rgba(255,100,0,0.28)';ctx.fillRect(x,y,TILE,TILE);}
+    if(w.isFainted){ctx.fillStyle='#fff';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText('ZZZ',x+22,y+bob+8);}
+    ctx.globalAlpha=1;
+
+    // Shop action highlight
+    if(shopAction){ctx.strokeStyle='rgba(255,255,0,0.9)';ctx.lineWidth=2;ctx.strokeRect(x,y,TILE,TILE);}
+  }
+
+  // Gas particles
+  for(const p of POOL){
+    if(!p.active)continue;
+    const fade=1-p.age/p.maxAge;
+    ctx.globalAlpha=fade*0.82;
+    ctx.beginPath();ctx.arc(p.x,p.y,4+p.volume*2,0,Math.PI*2);
+    ctx.fillStyle=potencyColor(p.potency,fade*0.82);ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // Explosions
+  for(const e of explosions){
+    const prog=e.age/e.maxAge;
+    ctx.globalAlpha=(1-prog)*0.85;
+    ctx.beginPath();ctx.arc(e.x,e.y,e.r*prog,0,Math.PI*2);
+    ctx.fillStyle=prog<0.5?'#ffff00':'#ff4400';ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // Hover
+  if(mouseCol>=0&&mouseCol<COLS&&mouseRow>=0&&mouseRow<ROWS&&state==='game'&&!shopAction){
+    ctx.strokeStyle=selTool==='repair'?'rgba(255,140,0,0.7)':'rgba(255,255,100,0.5)';ctx.lineWidth=2;
+    ctx.strokeRect(mouseCol*TILE+1,mouseRow*TILE+HUD_H+1,TILE-2,TILE-2);
+
+    // Draw wrench cursor overlay when in repair mode
+    if(selTool==='repair'){
+      const wx=mouseCol*TILE+TILE, wy=mouseRow*TILE+HUD_H;
+      ctx.font='16px serif';ctx.textAlign='left';ctx.fillText('🔧',wx,wy+16);
+    }
+
+    const existingM=machines.find(m=>m.col===mouseCol&&m.row===mouseRow);
+    if(existingM){
+      const ud=UPGRADES[existingM.type],lv=existingM.level||0;
+      const hp=existingM.health??100;
+      const tx=Math.min(mouseCol*TILE,W-170),ty=Math.max(mouseRow*TILE+HUD_H-46,HUD_H+2);
+      if(selTool==='repair'){
+        ctx.fillStyle='rgba(0,0,0,0.88)';ctx.fillRect(tx,ty,165,46);
+        ctx.fillStyle='#ff8800';ctx.font='bold 9px Courier New';ctx.textAlign='left';
+        ctx.fillText(`🔧 Health: ${Math.floor(hp)}%`,tx+3,ty+12);
+        const hpColor=hp>60?'#44ff88':hp>30?'#ffaa00':'#ff2222';
+        ctx.fillStyle='#333';ctx.fillRect(tx+3,ty+18,140,6);
+        ctx.fillStyle=hpColor;ctx.fillRect(tx+3,ty+18,140*(hp/100),6);
+        ctx.fillStyle=existingM.broken?'#ff8844':'#ffcc44';ctx.font='9px Courier New';
+        ctx.fillText(existingM.broken?'BROKEN — click to fix ($20)':`Click to restore +25 HP ($5)`,tx+3,ty+34);
+        ctx.fillStyle='#888';ctx.fillText(hp>=100?'100% — no repair needed':'',tx+3,ty+44);
+      } else if(existingM.broken){
+        ctx.fillStyle='rgba(0,0,0,0.85)';ctx.fillRect(tx,ty,165,22);
+        ctx.fillStyle='#ff8844';ctx.font='bold 9px Courier New';ctx.textAlign='left';
+        ctx.fillText('🔧 BROKEN — use Repair tool [R]',tx+3,ty+14);
+      } else {
+        ctx.fillStyle='rgba(0,0,0,0.85)';ctx.fillRect(tx,ty,165,46);
+        ctx.fillStyle='#ffff44';ctx.font='bold 9px Courier New';ctx.textAlign='left';
+        ctx.fillText(`HP: ${Math.floor(hp)}%`,tx+3,ty+11);
+        const hpColor=hp>60?'#44ff88':hp>30?'#ffaa00':'#ff2222';
+        ctx.fillStyle='#333';ctx.fillRect(tx+30,ty+4,120,6);
+        ctx.fillStyle=hpColor;ctx.fillRect(tx+30,ty+4,120*(hp/100),6);
+        if(ud&&lv<ud.costs.length){ctx.fillText(`⬆ UPGRADE Lv${lv+1}: $${ud.costs[lv]}`,tx+3,ty+26);ctx.fillStyle=money>=ud.costs[lv]?'#aaffaa':'#ff8888';ctx.font='9px Courier New';ctx.fillText(ud.descs[lv],tx+3,ty+38);}
+        else{ctx.fillStyle='#ffff44';ctx.font='9px Courier New';ctx.fillText('⭐ MAX LEVEL — right-click to sell',tx+3,ty+26);}
+      }
+    }else if(selTool===T.PIPE){
+      // Pipe mode cursor
+    }else{
+      const def=MDEFS.find(d=>d.type===selTool);
+      if(def&&grid[mouseRow][mouseCol]===T.EMPTY){
+        const tx=Math.min(mouseCol*TILE,W-130),ty=Math.max(mouseRow*TILE+HUD_H-18,HUD_H+2);
+        ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(tx,ty,125,16);
+        ctx.fillStyle=money>=def.cost?'#44ff44':'#ff4444';ctx.font='10px Courier New';ctx.textAlign='left';
+        ctx.fillText(`${def.label}${def.cost>0?' $'+def.cost:''}`,tx+3,ty+12);
+      }
+    }
+  }
+
+  drawHUD();
+  drawAlerts();
+  if(showShop)drawShop();
+  if(state==='gameover')drawGameOver();
+}
+
+function drawPipeTile(col,row){
+  const x=col*TILE,y=row*TILE+HUD_H;
+  const cx2=x+TILE/2,cy2=y+TILE/2;
+  ctx.fillStyle='#445566';ctx.fillRect(x+10,y+10,TILE-20,TILE-20);
+  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+  for(const[dc,dr]of dirs){
+    const nc=col+dc,nr=row+dr;
+    if(nc<0||nr<0||nc>=COLS||nr>=ROWS)continue;
+    if(grid[nr][nc]!==T.EMPTY){
+      ctx.fillStyle='#445566';
+      if(dr===0){// horizontal
+        const px=dc<0?x:cx2;ctx.fillRect(px,cy2-5,TILE/2,10);
+      }else{// vertical
+        const py=dr<0?y:cy2;ctx.fillRect(cx2-5,py,10,TILE/2);
+      }
+    }
+  }
+  // Center dot
+  ctx.beginPath();ctx.arc(cx2,cy2,4,0,Math.PI*2);ctx.fillStyle='#667799';ctx.fill();
+}
+
+function drawMachine(m){
+  const x=m.col*TILE,y=m.row*TILE+HUD_H;
+  const def=MDEFS.find(d=>d.type===m.type);
+  const t=Date.now()*0.003;
+  const img=IMAGES[def.imgKey];
+  if(img){ctx.imageSmoothingEnabled=false;ctx.drawImage(img,x+1,y+1,TILE-2,TILE-2);}
+  else{ctx.fillStyle=def.color;ctx.fillRect(x+2,y+2,TILE-4,TILE-4);}
+  if(m.type===T.FAN){
+    ctx.save();ctx.translate(x+TILE/2,y+TILE/2);ctx.rotate(t*4*(1+(m.level||0)));
+    for(let i=0;i<4;i++){ctx.rotate(Math.PI/2);ctx.fillStyle='rgba(100,200,255,0.75)';ctx.fillRect(-2,-13,4,9);}
+    ctx.restore();
+  }
+  // Broken overlay
+  if(m.broken){
+    ctx.fillStyle='rgba(180,0,0,0.5)';ctx.fillRect(x,y,TILE,TILE);
+    ctx.fillStyle='#ff4444';ctx.font='bold 18px serif';ctx.textAlign='center';ctx.fillText('❌',x+TILE/2,y+TILE/2+7);
+  }
+  // Label / stars
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(x,y+TILE-13,TILE,13);
+  ctx.fillStyle='#fff';ctx.font='8px Courier New';ctx.textAlign='center';
+  const stars='⭐'.repeat(m.level||0);
+  ctx.fillText(stars||def.label,x+TILE/2,y+TILE-3);
+  // Volume bar (top)
+  if(m.maxVolume>0&&!m.broken){
+    const fill=m.volume/m.maxVolume;
+    ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(x+2,y+1,TILE-4,3);
+    ctx.fillStyle=fill>0.8?'#ff4444':fill>0.5?'#ffaa00':'#44ff44';
+    ctx.fillRect(x+2,y+1,(TILE-4)*Math.min(1,fill),3);
+  }
+  // Health bar (bottom, only if not at full health)
+  const hp=m.health??100;
+  if(hp<100){
+    const hpFill=hp/100;
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(x+2,y+TILE-16,TILE-4,3);
+    ctx.fillStyle=hp>60?'#44ff88':hp>30?'#ffaa00':'#ff2222';
+    ctx.fillRect(x+2,y+TILE-16,(TILE-4)*hpFill,3);
+  }
+}
+
+function drawHUD(){
+  const isEndless=selectedDiff==='endless';
+  ctx.fillStyle='#fff';ctx.font='bold 12px Courier New';ctx.textAlign='left';
+  ctx.fillText(`💰 $${money}`,8,16);ctx.fillText(`⭐ ${score}`,8,32);
+
+  if(!currentLevel){// free play timer
+    if(!isEndless){const tl=Math.max(0,GAME_DUR-gameTime);const s=Math.ceil(tl/1000);ctx.fillStyle=tl<30000?'#ff4444':'#fff';ctx.font='bold 14px Courier New';ctx.textAlign='center';ctx.fillText(`⏱ ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`,W/2,18);}
+    else{const t2=Math.floor(gameTime/1000);ctx.fillStyle='#ff44ff';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText(`♾ ${Math.floor(t2/60)}:${String(t2%60).padStart(2,'0')}`,W/2,18);}
+  }
+
+  // Campaign objective / market price in centre
+  if(currentLevel){
+    const lv=LEVELS[currentLevel-1],obj=lv.obj;
+    let objText='';
+    if(obj.type==='survive'){const rem=Math.max(0,obj.dur-gameTime);const s=Math.ceil(rem/1000);objText=`⏱ Survive: ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')} left`;}
+    else if(obj.type==='ship'){objText=`📦 Ship: ${canisterCount}/${obj.count} canisters`;}
+    else if(obj.type==='ship_timed'){const rem=Math.max(0,obj.dur-gameTime);const s=Math.ceil(rem/1000);objText=`📦 ${canisterCount}/${obj.count} canisters | ⏱ ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;}
+    ctx.fillStyle='#ffff44';ctx.font='bold 10px Courier New';ctx.textAlign='center';
+    ctx.fillText(`LVL ${currentLevel}: ${objText}`,W/2,18);
+    const trend=marketMult>1.1?'📈':marketMult<0.9?'📉':'➡';
+    ctx.fillStyle=marketMult>1.1?'#44ff44':marketMult<0.9?'#ff4444':'#aaa';
+    ctx.font='9px Courier New';ctx.fillText(`${trend} ×${marketMult.toFixed(1)}`,W/2,30);
+  } else {
+    const trend=marketMult>1.1?'📈':marketMult<0.9?'📉':'➡';
+    ctx.fillStyle=marketMult>1.1?'#44ff44':marketMult<0.9?'#ff4444':'#ffff44';
+    ctx.font='10px Courier New';ctx.textAlign='center';
+    ctx.fillText(`${trend} Market ×${marketMult.toFixed(1)}`,W/2,32);
+  }
+
+  // Pressure bar
+  const bx=W-160,bw=150,pf=Math.min(1,pressure/100);
+  ctx.fillStyle='#2a2a3a';ctx.fillRect(bx,6,bw,16);
+  ctx.fillStyle=pf>0.8?'#ff2222':pf>0.6?'#ff8800':'#44cc44';ctx.fillRect(bx,6,bw*pf,16);
+  if(pf>0.7){ctx.fillStyle=`rgba(255,50,0,${Math.sin(Date.now()*0.008)*0.3+0.3})`;ctx.fillRect(bx,6,bw*pf,16);}
+  ctx.strokeStyle='#555';ctx.lineWidth=1;ctx.strokeRect(bx,6,bw,16);
+  ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';
+  ctx.fillText(`💨 PRESSURE ${Math.floor(pressure)}/100`,bx+bw/2,17);
+
+  // Toolbar: 6 tools + Repair + SHOP button
+  // 6 × 80px = 480 + repair 76px + shop 68px = 624 from x=8
+  const ty=43;
+  MDEFS.forEach((def,i)=>{
+    const allowed=levelAllowedTools==='all'||levelAllowedTools.includes(def.type);
+    const tx=8+i*80,sel=selTool===def.type&&allowed;
+    ctx.globalAlpha=allowed?1:0.3;
+    drawRR(tx,ty,74,17,3,sel?def.color:'#2a2a3a',sel?'#fff':'#444');
+    ctx.fillStyle=sel?'#111':def.color;ctx.font=`${sel?'bold ':''}8px Courier New`;ctx.textAlign='left';
+    ctx.fillText(`[${def.key}]${def.label}${def.cost>0?' $'+def.cost:''}`,tx+3,ty+12);
+    ctx.globalAlpha=1;
+  });
+  // Repair tool button [R]
+  const repairSel=selTool==='repair';
+  drawRR(488,ty,74,17,3,repairSel?'#ff8800':'#2a2a3a',repairSel?'#fff':'#666');
+  ctx.fillStyle=repairSel?'#111':'#ff8800';ctx.font=`${repairSel?'bold ':''}8px Courier New`;ctx.textAlign='left';
+  ctx.fillText('[R] Repair $5/clk',491,ty+12);
+  // Shop
+  drawRR(566,ty,68,17,3,showShop?'#ffaa00':'#2a2a3a',showShop?'#fff':'#666');
+  ctx.fillStyle=showShop?'#111':'#ffaa00';ctx.font='bold 9px Courier New';ctx.textAlign='center';
+  ctx.fillText('[B] SHOP',566+34,ty+12);
+
+}
+
+function drawAlerts(){
+  ctx.textAlign='center';let ay=HUD_H+30;
+  for(const a of alerts.slice(-4)){
+    const fade=Math.min(1,1-(a.elapsed-a.duration+500)/500);
+    ctx.globalAlpha=Math.max(0,fade);ctx.font='bold 12px Courier New';
+    const tw=ctx.measureText(a.text).width;
+    ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(W/2-tw/2-10,ay-14,tw+20,20);
+    ctx.fillStyle=a.color;ctx.fillText(a.text,W/2,ay);
+    ay+=24;ctx.globalAlpha=1;
+  }ctx.globalAlpha=1;
+}
+
+function drawShop(){
+  const sw=280,sh=260,sx=W/2-sw/2,sy=HUD_H+30;
+  drawRR(sx,sy,sw,sh,10,'rgba(10,10,30,0.96)','#665522');
+  ctx.fillStyle='#ffaa00';ctx.font='bold 16px Courier New';ctx.textAlign='center';ctx.fillText('🛒 SHOP',W/2,sy+24);
+  ctx.fillStyle='#888';ctx.font='10px Courier New';ctx.fillText(`Balance: $${money}`,W/2,sy+40);
+  SHOP_ITEMS.forEach((item,i)=>{
+    const iy=sy+52+i*48;
+    const canAfford=money>=item.cost;
+    drawRR(sx+10,iy,sw-20,42,6,canAfford?'rgba(60,50,20,0.9)':'rgba(40,30,20,0.6)','#555');
+    ctx.textAlign='left';
+    ctx.fillStyle=canAfford?'#ffff44':'#888';ctx.font='bold 11px Courier New';
+    ctx.fillText(`${item.icon} ${item.label}  $${item.cost}`,sx+18,iy+14);
+    ctx.fillStyle=canAfford?'#aaa':'#666';ctx.font='9px Courier New';
+    ctx.fillText(item.desc,sx+18,iy+28);
+    // Buy button
+    if(canAfford){drawRR(sx+sw-58,iy+7,46,26,4,'#cc8800');ctx.fillStyle='#111';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText('BUY',sx+sw-35,iy+23);}
+  });
+  drawRR(sx+sw/2-35,sy+sh-32,70,24,5,'#555');
+  ctx.fillStyle='#fff';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText('✕ CLOSE',W/2,sy+sh-16);
+}
+
+function drawCampaign(){
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(0,0,W,CANVAS_H);}
+  else{ctx.fillStyle='#111';ctx.fillRect(0,0,W,CANVAS_H);}
+  ctx.fillStyle='#ffff44';ctx.font='bold 30px Courier New';ctx.textAlign='center';ctx.fillText('💨 CAMPAIGN',W/2,46);
+  ctx.fillStyle='#aaa';ctx.font='11px Courier New';ctx.fillText('Complete levels to unlock the next. All unlocked levels can be replayed.',W/2,66);
+
+  // Level nodes
+  const nodeW=92,nodeH=90,gap=12;
+  const totalW=LEVELS.length*(nodeW+gap)-gap;
+  const startX=(W-totalW)/2;
+  const ny=100;
+  LEVELS.forEach((lv,i)=>{
+    const nx=startX+i*(nodeW+gap);
+    const unlocked=lv.num<=campaignUnlocked;
+    const done=campaignScores[lv.num]!==undefined;
+    const bg=done?'rgba(20,60,20,0.9)':unlocked?'rgba(20,20,60,0.9)':'rgba(20,20,20,0.9)';
+    const border=done?'#44ff44':unlocked?'#6688ff':'#333';
+    drawRR(nx,ny,nodeW,nodeH,8,bg,border);
+    ctx.textAlign='center';
+    // Icon & name
+    ctx.font='22px serif';ctx.fillText(lv.icon,nx+nodeW/2,ny+28);
+    ctx.fillStyle=unlocked?'#fff':'#555';ctx.font='bold 9px Courier New';
+    ctx.fillText(lv.name,nx+nodeW/2,ny+42);
+    ctx.fillStyle=unlocked?'#aaa':'#444';ctx.font='8px Courier New';
+    ctx.fillText(lv.desc,nx+nodeW/2,ny+54);
+    // Status
+    if(done){
+      ctx.fillStyle='#44ff44';ctx.font='8px Courier New';
+      ctx.fillText('✅ DONE',nx+nodeW/2,ny+67);
+      ctx.fillStyle='#ffff44';ctx.fillText(`Best: ${campaignScores[lv.num]}`,nx+nodeW/2,ny+78);
+    } else if(unlocked){
+      ctx.fillStyle='#ffff44';ctx.font='bold 9px Courier New';ctx.fillText('▶ PLAY',nx+nodeW/2,ny+73);
+    } else {
+      ctx.fillStyle='#555';ctx.font='14px serif';ctx.fillText('🔒',nx+nodeW/2,ny+73);
+    }
+    // Connector arrow
+    if(i<LEVELS.length-1){
+      const ax=nx+nodeW+2,ay=ny+nodeH/2;
+      ctx.fillStyle=unlocked?'#6688ff':'#333';
+      ctx.beginPath();ctx.moveTo(ax,ay-4);ctx.lineTo(ax+gap-2,ay);ctx.lineTo(ax,ay+4);ctx.fill();
+    }
+  });
+
+  // Level tip on hover
+  LEVELS.forEach((lv,i)=>{
+    const nx=startX+i*(nodeW+gap);
+    if(mouseCol*TILE>=nx&&mouseCol*TILE<nx+nodeW){
+      drawRR(10,205,W-20,44,6,'rgba(0,0,0,0.85)','#445');
+      ctx.fillStyle='#ffff44';ctx.font='bold 10px Courier New';ctx.textAlign='center';
+      ctx.fillText(`Lvl ${lv.num}: ${lv.desc}  |  ${lv.tip}`,W/2,222);
+      ctx.fillText(`Starting money: $${lv.money}  |  Events: ${lv.events?'Yes':'No (beginner-friendly)'}`,W/2,238);
+    }
+  });
+
+  drawBtn(W/2-120,268,110,36,'🕹 FREE PLAY','#445','#aaa');
+  drawBtn(W/2+10, 268,110,36,'◀ BACK','#333','#aaa');
+  ctx.fillStyle='#555';ctx.font='9px Courier New';ctx.textAlign='center';
+  ctx.fillText('Free Play = classic sandbox mode (pick your own difficulty)',W/2,320);
+}
+
+function drawLevelOver(){
+  const lv=currentLevel?LEVELS[currentLevel-1]:null;
+  const won=pressure<100;
+  if(IMAGES.bg){ctx.drawImage(IMAGES.bg,0,0,W,CANVAS_H);ctx.fillStyle='rgba(0,0,0,0.78)';ctx.fillRect(0,0,W,CANVAS_H);}
+  drawRR(W/2-210,70,420,330,14,'rgba(10,10,30,0.97)','#445');
+  ctx.textAlign='center';
+  ctx.fillStyle=won?'#44ff44':'#ff4444';ctx.font='bold 34px Courier New';
+  ctx.fillText(won?`🎉 LEVEL ${currentLevel} COMPLETE!`:'💥 LEVEL FAILED!',W/2,130);
+  if(lv){ctx.fillStyle='#aaa';ctx.font='12px Courier New';ctx.fillText(lv.name+' — '+lv.desc,W/2,158);}
+  ctx.fillStyle='#ffff44';ctx.font='bold 20px Courier New';ctx.fillText(`Score: ${score}`,W/2,192);
+  ctx.fillStyle='#aaa';ctx.font='11px Courier New';
+  ctx.fillText(`Canisters shipped: ${canisterCount}  |  Peak pressure: ${Math.floor(peakPressure)}`,W/2,216);
+  if(won&&lv&&currentLevel<LEVELS.length){
+    const next=LEVELS[currentLevel];
+    ctx.fillStyle='#88ffaa';ctx.font='11px Courier New';
+    ctx.fillText(`🔓 Unlocked: Level ${currentLevel+1} — ${next.name}`,W/2,242);
+  } else if(won&&currentLevel===LEVELS.length){
+    ctx.fillStyle='#ffff44';ctx.font='bold 12px Courier New';ctx.fillText('🏆 ALL LEVELS COMPLETE! You are the Fart Master!',W/2,242);
+  }
+  if(won&&lv&&currentLevel<LEVELS.length)
+    drawBtn(W/2-185,272,130,38,`▶ NEXT LVL ${currentLevel+1}`,'#44ff44');
+  drawBtn(won&&lv&&currentLevel<LEVELS.length?W/2-40:W/2-130,272,120,38,'↩ RETRY','#ffaa00');
+  drawBtn(won&&lv&&currentLevel<LEVELS.length?W/2+90:W/2+0,272,100,38,'🗺 LEVELS','#445','#fff');
+}
+
+function drawGameOver(){
+  ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,CANVAS_H);
+  const won=pressure<100&&(selectedDiff==='endless'||gameTime>=GAME_DUR);
+  drawRR(W/2-205,85,410,310,14,'rgba(10,10,30,0.96)','#445');
+  ctx.textAlign='center';
+  ctx.fillStyle=won?'#44ff44':'#ff4444';ctx.font='bold 36px Courier New';ctx.fillText(won?'🎉 SURVIVED!':'💥 KABOOM!',W/2,148);
+  ctx.fillStyle='#ffff44';ctx.font='bold 22px Courier New';ctx.fillText(`Score: ${score}`,W/2,192);
+  ctx.fillStyle='#aaa';ctx.font='11px Courier New';
+  ctx.fillText(`Processed: ${Math.floor(totalProcessed)}  Peak pressure: ${Math.floor(peakPressure)}`,W/2,218);
+  ctx.fillText(`Canisters: ${canisterCount}  Money earned: $${money}`,W/2,236);
+  ctx.fillStyle='#55ff55';ctx.font='10px Courier New';ctx.fillText('Score saved to leaderboard!',W/2,258);
+  drawBtn(W/2-190,275,115,38,'▶ PLAY AGAIN','#44ff44');
+  drawBtn(W/2- 50,275, 96,38,'🏆 SCORES',  '#ffff44');
+  drawBtn(W/2+ 56,275, 90,38,'🏠 MENU',    '#445','#fff');
+  ctx.fillStyle='#555';ctx.font='10px Courier New';
+  ctx.fillText('Tip: Fan→Filter = pressure relief  |  Fan→Comp→Tank→Dock = money chain  |  Use PIPES to connect across map',W/2,360);
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+function loop(ts){
+  const dt=lastTime?Math.min(ts-lastTime,50):16;
+  lastTime=ts;
+  if(state==='loading'){drawLoading();if(assetsLoaded>=assetsTotal&&assetsTotal>0)state='title';}
+  else if(state==='title')drawTitle();
+  else if(state==='campaign')drawCampaign();
+  else if(state==='difficulty')drawDifficulty();
+  else if(state==='instructions')drawInstructions();
+  else if(state==='game'||state==='gameover'||state==='levelover'){update(dt);drawGame();if(state==='gameover')drawGameOver();else if(state==='levelover')drawLevelOver();}
+  else if(state==='leaderboard')drawLeaderboard();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ============================================================
+//  INPUT
+// ============================================================
+function getGridPos(e){
+  const r=canvas.getBoundingClientRect();
+  const sx=W/r.width,sy=CANVAS_H/r.height;
+  const cx=(e.clientX-r.left)*sx,cy=(e.clientY-r.top)*sy;
+  return{cx,cy,col:Math.floor(cx/TILE),row:Math.floor((cy-HUD_H)/TILE)};
+}
+
+canvas.addEventListener('mousemove',e=>{
+  const{col,row,cy}=getGridPos(e);
+  mouseCol=col;mouseRow=row;
+  // Pipe drawing drag
+  if(isPipeDrawing&&selTool===T.PIPE&&cy>=HUD_H){
+    if(col>=0&&col<COLS&&row>=0&&row<ROWS)placePipe(col,row);
+  }
+});
+
+canvas.addEventListener('mousedown',e=>{
+  if(e.button!==0)return;
+  if(state==='game'&&selTool===T.PIPE){
+    const{col,row,cy}=getGridPos(e);
+    if(cy>=HUD_H&&col>=0&&col<COLS&&row>=0&&row<ROWS){isPipeDrawing=true;placePipe(col,row);}
+  }
+});
+
+canvas.addEventListener('mouseup',e=>{if(e.button===0)isPipeDrawing=false;});
+
+canvas.addEventListener('click',e=>{
+  const{cx,cy,col,row}=getGridPos(e);
+
+  if(state==='title'){
+    if(inBtn(cx,cy,W/2-110,178,220,44))state='campaign';
+    else if(inBtn(cx,cy,W/2-110,232,220,44))state='difficulty';
+    else if(inBtn(cx,cy,W/2-110,286,220,44)){instrPage2=0;state='instructions';}
+    else if(inBtn(cx,cy,W/2-110,340,220,44))state='leaderboard';
+    return;
+  }
+  if(state==='campaign'){
+    const nodeW=92,gap=12,totalW=LEVELS.length*(nodeW+gap)-gap,startX=(W-totalW)/2;
+    LEVELS.forEach((lv,i)=>{
+      const nx=startX+i*(nodeW+gap);
+      if(lv.num<=campaignUnlocked&&inBtn(cx,cy,nx,100,nodeW,90)){
+        initGame(lv.num);gameRunning=true;state='game';
+      }
+    });
+    if(inBtn(cx,cy,W/2-120,268,110,36))state='difficulty'; // Free play
+    if(inBtn(cx,cy,W/2+10,268,110,36))state='title';
+    return;
+  }
+  if(state==='difficulty'){
+    const diffs=['easy','normal','hard','endless'];
+    diffs.forEach((d,i)=>{if(inBtn(cx,cy,W/2-170,108+i*76,340,60))selectedDiff=d;});
+    if(inBtn(cx,cy,W/2-100,448,200,42)){initGame();gameRunning=true;state='game';}
+    if(inBtn(cx,cy,W/2-220,448,100,42))state='title';
+    return;
+  }
+  if(state==='instructions'){
+    if(instrPage2>0&&inBtn(cx,cy,52,CANVAS_H-68,88,32))instrPage2--;
+    if(instrPage2<PAGES.length-1&&inBtn(cx,cy,W-140,CANVAS_H-68,88,32))instrPage2++;
+    else if(instrPage2===PAGES.length-1&&inBtn(cx,cy,W-140,CANVAS_H-68,88,32))state='difficulty';
+    if(inBtn(cx,cy,W/2-44,CANVAS_H-68,88,32))state='title';
+    return;
+  }
+  if(state==='game'){
+    if(showShop){
+      // Shop click handling
+      const sw=280,sy=HUD_H+30,sx=W/2-sw/2;
+      SHOP_ITEMS.forEach((item,i)=>{
+        const iy=sy+52+i*48;
+        if(money>=item.cost&&inBtn(cx,cy,sx+sw-58,iy+7,46,26))buyShopItem(item.id);
+      });
+      if(inBtn(cx,cy,W/2-35,sy+238,70,24))showShop=false;
+      if(cy<sy||cy>sy+280||cx<sx||cx>sx+sw)showShop=false;
+      return;
+    }
+    if(cy<HUD_H){
+      MDEFS.forEach((def,i)=>{if(inBtn(cx,cy,8+i*80,43,74,17))selTool=def.type;});
+      if(inBtn(cx,cy,488,43,74,17))selTool=selTool==='repair'?T.FAN:'repair';
+      if(inBtn(cx,cy,566,43,68,17))showShop=!showShop;
+      return;
+    }
+    if(col>=0&&col<COLS&&row>=0&&row<ROWS){
+      // Shop action: apply to worker
+      if(shopAction){
+        const wi=workers.findIndex(w=>w.col===col&&w.row===row);
+        if(wi!==-1)applyShopActionToWorker(wi);
+        return;
+      }
+      if(selTool===T.PIPE)return; // handled by mousedown/move
+      if(selTool==='repair'){repairClick(col,row);return;}
+      // Block disallowed tools in campaign levels
+      if(levelAllowedTools!=='all'&&!levelAllowedTools.includes(selTool)){addAlert('🔒 Not available yet!','#ff8800',1500);return;}
+      if(grid[row][col]!==T.EMPTY)upgradeMachine(col,row);
+      else placeMachine(col,row,selTool);
+    }
+    return;
+  }
+  if(state==='levelover'){
+    const won=pressure<100;
+    const hasNext=currentLevel&&currentLevel<LEVELS.length;
+    if(won&&hasNext&&inBtn(cx,cy,W/2-185,272,130,38)){initGame(currentLevel+1);gameRunning=true;state='game';}
+    const retryX=won&&hasNext?W/2-40:W/2-130;
+    const levelsX=won&&hasNext?W/2+90:W/2+0;
+    if(inBtn(cx,cy,retryX,272,120,38)){initGame(currentLevel);gameRunning=true;state='game';}
+    if(inBtn(cx,cy,levelsX,272,100,38))state='campaign';
+    return;
+  }
+  if(state==='gameover'){
+    if(inBtn(cx,cy,W/2-190,275,115,38))state='difficulty';
+    if(inBtn(cx,cy,W/2-50, 275, 96,38))state='leaderboard';
+    if(inBtn(cx,cy,W/2+56, 275, 90,38))state='title';
+    return;
+  }
+  if(state==='leaderboard'){
+    if(inBtn(cx,cy,W/2-110,CANVAS_H-62,100,34))state='difficulty';
+    if(inBtn(cx,cy,W/2+10, CANVAS_H-62,100,34))state='title';
+    return;
+  }
+});
+
+canvas.addEventListener('contextmenu',e=>{
+  e.preventDefault();
+  if(state!=='game')return;
+  const{col,row,cy}=getGridPos(e);
+  if(cy<HUD_H||col<0||col>=COLS||row<0||row>=ROWS)return;
+  removeTile(col,row);
+});
+
+// Touch support — map touch events to mouse events
+function touchToMouse(e, type){
+  e.preventDefault();
+  const t=e.changedTouches[0];
+  canvas.dispatchEvent(new MouseEvent(type,{clientX:t.clientX,clientY:t.clientY,bubbles:true,button:0}));
+}
+canvas.addEventListener('touchstart', e=>{touchToMouse(e,'mousedown');touchToMouse(e,'click');},{passive:false});
+canvas.addEventListener('touchmove',  e=>{touchToMouse(e,'mousemove');},{passive:false});
+canvas.addEventListener('touchend',   e=>{touchToMouse(e,'mouseup');},{passive:false});
+
+document.addEventListener('keydown',e=>{
+  const km={'1':T.FAN,'2':T.FILTER,'3':T.COMPRESSOR,'4':T.TANK,'5':T.DOCK,'6':T.PIPE};
+  if(state==='game'){
+    if(km[e.key]!==undefined)selTool=km[e.key];
+    if(e.key==='r'||e.key==='R'){selTool=selTool==='repair'?T.FAN:'repair';}
+    if(e.key==='b'||e.key==='B'){showShop=!showShop;}
+    if(e.key==='Escape'){showShop=false;shopAction=null;}
+  }
+  if(state==='instructions'){
+    if(e.key==='ArrowRight'&&instrPage2<PAGES.length-1)instrPage2++;
+    if(e.key==='ArrowLeft'&&instrPage2>0)instrPage2--;
+  }
+});
+</script>
+</body>
+</html>
